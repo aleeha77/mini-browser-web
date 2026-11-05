@@ -5,19 +5,21 @@ import { createObserveModule } from '@nestjs/observe';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
+// 1. Import your Mongoose schemas
+import { User, UserSchema } from './schemas/user.schema';
+import { Site, SiteSchema } from './schemas/site.schema';
+import { Visit, VisitSchema } from './schemas/visit.schema';
+
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
 @Module({
   imports: [
-    // Keeps your existing observe module setup
     ObserveModule.forRoot({
       appKey: 'YOUR_APP_KEY',
       appSecret: 'YOUR_APP_SECRET',
       serviceId: 'backend',
     }),
-    // Loads your .env file globally
     ConfigModule.forRoot({ isGlobal: true }),
-    // Connects NestJS to MongoDB using your MONGODB_URI variable
     MongooseModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -25,6 +27,12 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
       }),
       inject: [ConfigService],
     }),
+
+    MongooseModule.forFeature([
+      { name: User.name, schema: UserSchema },
+      { name: Site.name, schema: SiteSchema },
+      { name: Visit.name, schema: VisitSchema },
+    ]),
   ],
   controllers: [AppController],
   providers: [AppService],
