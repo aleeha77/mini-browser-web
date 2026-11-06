@@ -1,5 +1,16 @@
 const API_BASE = 'http://localhost:3001';
 
+export interface User {
+  _id: string;
+  name: string;
+}
+
+export async function fetchUsers(): Promise<User[]> {
+  const res = await fetch(`${API_BASE}/users`);
+  if (!res.ok) throw new Error('Failed to fetch users.');
+  return res.json();
+}
+
 export async function fetchSite(address: string) {
   const res = await fetch(`${API_BASE}/sites/${address}`);
   if (!res.ok) {
@@ -12,11 +23,12 @@ export async function fetchSite(address: string) {
 }
 
 export async function recordVisit(userId: string, address: string, method: string) {
-  await fetch(`${API_BASE}/history`, {
+  const res = await fetch(`${API_BASE}/history`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, address, navigationMethod: method }),
   });
+  if (!res.ok) throw new Error('Failed to record visit.');
 }
 
 export async function fetchHistory(userId: string) {

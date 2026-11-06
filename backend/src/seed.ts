@@ -15,17 +15,13 @@ async function bootstrap() {
 
   console.log('🌱 Seeding database...');
 
-  //Cleearing any existing data to ensure running twice doesn't duplicate or crash
-  await userModel.deleteMany({});
-  await siteModel.deleteMany({});
-  await visitModel.deleteMany({});
-  console.log('🧹 Cleared existing database records.');
-  const users = await userModel.create([
-    { name: 'Alice' },
-    { name: 'Bob' },
-  ]);
+  const users = await Promise.all(
+    ['Alice', 'Bob', 'Casey', 'Drew'].map((name) =>
+      userModel.findOneAndUpdate({ name }, { $set: { name } }, { upsert: true, new: true }),
+    ),
+  );
   console.log(`👤 Inserted ${users.length} users.`);
-  const sites = await siteModel.create([
+  const siteDefinitions = [
     {
       address: 'tidepool.zz',
       title: 'The Tidepool Archives',
@@ -86,29 +82,42 @@ async function bootstrap() {
       body: `<h1>The Old Vault</h1><p>Dusty records of early web experiments. Rarely visited, but full of history.</p><p>Head back to the beginning at <a href="tidepool.zz">Tidepool Archives</a>.</p>`,
       author: 'Bob',
     },
-  ]);
-  console.log(`📄 Inserted ${sites.length} sample sites.`);
+  ];
+  await Promise.all(siteDefinitions.map((site) =>
+    siteModel.updateOne({ address: site.address }, { $set: site }, { upsert: true }),
+  ));
+  console.log(`📄 Upserted ${siteDefinitions.length} sample sites.`);
   const aliceUser = users.find(u => u.name === 'Alice');
-  const bobUser = users.find(u => u.name === 'Bob');
+  const bobUser = users.find(u => u?.name === 'Bob');
+  const caseyUser = users.find(u => u?.name === 'Casey');
+  const drewUser = users.find(u => u?.name === 'Drew');
 
-  if (!aliceUser || !bobUser) {
+  if (!aliceUser || !bobUser || !caseyUser || !drewUser) {
     throw new Error('Seed users were not created properly.');
   }
 
   const aliceId = aliceUser._id;
   const bobId = bobUser._id;
+  const caseyId = caseyUser._id;
+  const drewId = drewUser._id;
 
-  await visitModel.create([
-    //like Alice's trail: tidepool -> beacon -> lighthouse -> glass
-    { userId: aliceId, address: 'tidepool.zz', navigationMethod: 'typed', timestamp: new Date(Date.now() - 3600000) },
-    { userId: aliceId, address: 'beacon.zz', navigationMethod: 'link', timestamp: new Date(Date.now() - 3000000) },
-    { userId: aliceId, address: 'lighthouse.zz', navigationMethod: 'link', timestamp: new Date(Date.now() - 2400000) },
-    { userId: aliceId, address: 'glass.zz', navigationMethod: 'link', timestamp: new Date(Date.now() - 1800000) },
-    { userId: bobId, address: 'orbit.zz', navigationMethod: 'typed', timestamp: new Date(Date.now() - 5000000) },
-    { userId: bobId, address: 'whisper.zz', navigationMethod: 'link', timestamp: new Date(Date.now() - 4000000) },
-    { userId: bobId, address: 'tidepool.zz', navigationMethod: 'link', timestamp: new Date(Date.now() - 2000000) },
-  ]);
-  console.log('Inserted initial browsing history.');
+  await visitModel.deleteMany({ seedKey: /^mini-browser:/ });
+  const start = Date.parse('2025-01-15T12:00:00.000Z');
+  const trails = [
+    [aliceId, ['tidepool.zz', 'beacon.zz', 'lighthouse.zz', 'glass.zz', 'ember.zz', 'moss.zz', 'nexus.zz', 'archive.zz', 'tidepool.zz', 'whisper.zz', 'orbit.zz', 'nexus.zz', 'beacon.zz', 'lighthouse.zz', 'tidepool.zz', 'archive.zz']],
+    [bobId, ['orbit.zz', 'whisper.zz', 'tidepool.zz', 'beacon.zz', 'tidepool.zz', 'archive.zz', 'nexus.zz']],
+    [caseyId, ['archive.zz', 'tidepool.zz', 'whisper.zz', 'orbit.zz', 'nexus.zz', 'moss.zz']],
+    [drewId, ['lighthouse.zz', 'glass.zz', 'ember.zz', 'glass.zz', 'beacon.zz']],
+  ] as const;
+  const visits = trails.flatMap(([userId, addresses], userIndex) => addresses.map((address, visitIndex) => ({
+    userId,
+    address,
+    navigationMethod: visitIndex === 0 ? 'typed' : visitIndex === 4 && userIndex === 1 ? 'back' : 'link',
+    timestamp: new Date(start + (userIndex * 12 + visitIndex * 4) * 60_000),
+    seedKey: `mini-browser:${userIndex}:${visitIndex}`,
+  })));
+  await visitModel.insertMany(visits);
+  console.log(`Inserted ${visits.length} deterministic browsing history records.`);
 
   console.log('Database seeding completed successfully!');
   await app.close();

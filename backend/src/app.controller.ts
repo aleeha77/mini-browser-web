@@ -5,6 +5,11 @@ import { AppService } from './app.service';
 export class AppController {
   constructor(private readonly appService: AppService) {}
 
+  @Get('users')
+  async getUsers() {
+    return await this.appService.getUsers();
+  }
+
   @Get('sites/:address')
   async getSite(@Param('address') address: string) {
     return await this.appService.getSiteByAddress(address);

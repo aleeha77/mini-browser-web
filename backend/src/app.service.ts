@@ -13,6 +13,10 @@ export class AppService {
     @InjectModel(Visit.name) private visitModel: Model<Visit>,
   ) {}
 
+  async getUsers() {
+    return await this.userModel.find().sort({ name: 1 }).select({ name: 1 });
+  }
+
   // 1. Get a specific site by address (e.g. tidepool.zz)
   async getSiteByAddress(address: string) {
     const site = await this.siteModel.findOne({ address: address.toLowerCase().trim() });

@@ -16,10 +16,13 @@ export class Visit {
 
   @Prop({ 
     required: true, 
-    enum: ['typed', 'link', 'back', 'forward'], 
+    enum: ['typed', 'link', 'back', 'forward', 'published', 'history-jump', 'search-jump'],
     type: String 
   })
   navigationMethod: string;
+
+  @Prop({ index: true })
+  seedKey?: string;
 }
 
 export const VisitSchema = SchemaFactory.createForClass(Visit);

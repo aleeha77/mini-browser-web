@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { fetchSite, recordVisit, fetchHistory, searchSites, publishSite } from '@/lib/api';
+import React, { useState, useEffect, useRef } from 'react';
+import { fetchSite, recordVisit, fetchHistory, searchSites, publishSite, fetchUsers, User } from '@/lib/api';
 
 interface VisitItem {
   _id: string;
@@ -16,20 +16,36 @@ interface SearchResult {
   author: string;
 }
 
+interface PageEntry {
+  address: string;
+  scrollTop: number;
+  siteData: { title: string; body: string; author: string } | null;
+}
+
+type NavigateFunction = (address: string, method: string, mode: 'new' | 'back' | 'forward' | 'replace', targetUserId?: string) => Promise<void>;
+
 export default function BrowserPage() {
   const [addressInput, setAddressInput] = useState('tidepool.zz');
   const [currentAddress, setCurrentAddress] = useState('tidepool.zz');
-  const [siteData, setSiteData] = useState<{ title: string; body: string; author: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visitWarning, setVisitWarning] = useState<string | null>(null);
 
-  // User Switcher State (Pre-seeded users)
-  const [userId, setUserId] = useState('65a1b2c3d4e5f67890123456');
-  const [userName, setUserName] = useState('Alice');
+  const [users, setUsers] = useState<User[]>([]);
+  const [userId, setUserId] = useState('');
+  const userName = users.find((user) => user._id === userId)?.name ?? '';
 
-  // Navigation History Stack
-  const [historyStack, setHistoryStack] = useState<string[]>(['tidepool.zz']);
+  // Entries retain the rendered page and viewport position for instant restoration.
+  const [historyStack, setHistoryStack] = useState<PageEntry[]>([
+    { address: 'tidepool.zz', scrollTop: 0, siteData: null },
+  ]);
   const [historyIndex, setHistoryIndex] = useState(0);
+  const historyRef = useRef(historyStack);
+  const historyIndexRef = useRef(0);
+  const scrollPositionRef = useRef(0);
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const initialLoadRef = useRef(false);
+  const navigateRef = useRef<NavigateFunction>(() => Promise.resolve());
 
   // Database Visit History for Sidebar
   const [dbHistory, setDbHistory] = useState<VisitItem[]>([]);
@@ -45,12 +61,12 @@ export default function BrowserPage() {
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
   const [publishError, setPublishError] = useState<string | null>(null);
+  const currentEntry = historyStack[historyIndex];
 
-  // Initial load
   useEffect(() => {
-    loadPage('tidepool.zz', 'typed', false);
-    loadUserHistory(userId);
-  }, [userId]);
+    historyRef.current = historyStack;
+    historyIndexRef.current = historyIndex;
+  }, [historyStack, historyIndex]);
 
   const loadUserHistory = async (targetUserId: string) => {
     try {
@@ -61,53 +77,113 @@ export default function BrowserPage() {
     }
   };
 
-  const loadPage = async (address: string, method: string = 'typed', updateStack: boolean = true) => {
+  const updateEntryScroll = (scrollTop: number) => {
+    scrollPositionRef.current = scrollTop;
+    setHistoryStack((currentStack) => currentStack.map((entry, index) => (
+      index === historyIndexRef.current ? { ...entry, scrollTop } : entry
+    )));
+  };
+
+  const restoreScroll = (scrollTop: number) => {
+    iframeRef.current?.contentWindow?.postMessage({ type: 'RESTORE_SCROLL', scrollTop }, '*');
+  };
+
+  const navigate = async (
+    address: string,
+    method: string,
+    mode: 'new' | 'back' | 'forward' | 'replace',
+    targetUserId = userId,
+  ) => {
+    const normalizedAddress = address.trim().toLowerCase();
+    const currentIndex = historyIndexRef.current;
+    const currentStack = historyRef.current.map((historyEntry, index) => (
+      index === currentIndex ? { ...historyEntry, scrollTop: scrollPositionRef.current } : historyEntry
+    ));
+    historyRef.current = currentStack;
     setLoading(true);
     setError(null);
+    setVisitWarning(null);
     try {
-      const data = await fetchSite(address);
-      setSiteData(data);
-      setCurrentAddress(address);
-      setAddressInput(address);
-
-      await recordVisit(userId, address, method);
-      await loadUserHistory(userId);
-
-      if (updateStack) {
-        const newStack = historyStack.slice(0, historyIndex + 1);
-        newStack.push(address);
-        setHistoryStack(newStack);
-        setHistoryIndex(newStack.length - 1);
+      let entry: PageEntry;
+      if (mode === 'back' || mode === 'forward') {
+        entry = currentStack[currentIndex + (mode === 'back' ? -1 : 1)];
+      } else {
+        const data = await fetchSite(normalizedAddress);
+        entry = { address: normalizedAddress, scrollTop: 0, siteData: data };
       }
-    } catch (err: any) {
-      setError(err.message || 'An error occurred');
-      setSiteData(null);
-      setCurrentAddress(address);
+
+      const nextIndex = mode === 'back'
+        ? currentIndex - 1
+        : mode === 'forward'
+          ? currentIndex + 1
+          : mode === 'replace'
+            ? currentIndex
+            : currentIndex + 1;
+      const nextStack = mode === 'new'
+        ? [...currentStack.slice(0, currentIndex + 1), entry]
+        : mode === 'replace'
+          ? currentStack.map((item, index) => index === currentIndex ? entry : item)
+          : currentStack;
+
+      setHistoryStack(nextStack);
+      setHistoryIndex(nextIndex);
+      historyRef.current = nextStack;
+      historyIndexRef.current = nextIndex;
+      scrollPositionRef.current = entry.scrollTop;
+      setCurrentAddress(entry.address);
+      setAddressInput(entry.address);
+      setError(null);
+      try {
+        await recordVisit(targetUserId, entry.address, method);
+        await loadUserHistory(targetUserId);
+      } catch (visitError: unknown) {
+        setVisitWarning(visitError instanceof Error ? visitError.message : 'Visit history could not be saved.');
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => {
+    navigateRef.current = navigate;
+  }, [navigate]);
+
+  useEffect(() => {
+    fetchUsers()
+      .then((availableUsers) => {
+        setUsers(availableUsers);
+        const firstUser = availableUsers[0];
+        if (firstUser) {
+          setUserId(firstUser._id);
+          loadUserHistory(firstUser._id);
+          if (!initialLoadRef.current) {
+            initialLoadRef.current = true;
+            navigateRef.current('tidepool.zz', 'typed', 'replace', firstUser._id);
+          }
+        }
+      })
+      .catch((err) => setError(err.message || 'Failed to load users.'));
+  }, []);
+
+
   const handleGo = (e: React.FormEvent) => {
     e.preventDefault();
     if (addressInput.trim()) {
-      loadPage(addressInput.trim().toLowerCase(), 'typed', true);
+      navigate(addressInput, 'typed', 'new');
     }
   };
 
   const handleBack = () => {
     if (historyIndex > 0) {
-      const newIdx = historyIndex - 1;
-      setHistoryIndex(newIdx);
-      loadPage(historyStack[newIdx], 'back', false);
+      navigate(historyStack[historyIndex - 1].address, 'back', 'back');
     }
   };
 
   const handleForward = () => {
     if (historyIndex < historyStack.length - 1) {
-      const newIdx = historyIndex + 1;
-      setHistoryIndex(newIdx);
-      loadPage(historyStack[newIdx], 'forward', false);
+      navigate(historyStack[historyIndex + 1].address, 'forward', 'forward');
     }
   };
 
@@ -138,26 +214,74 @@ export default function BrowserPage() {
       setNewAddress('');
       setNewTitle('');
       setNewBody('');
-      loadPage(newAddress.trim().toLowerCase(), 'published', true);
-    } catch (err: any) {
-      setPublishError(err.message || 'Failed to publish site.');
+      navigate(newAddress, 'published', 'new');
+    } catch (err: unknown) {
+      setPublishError(err instanceof Error ? err.message : 'Failed to publish site.');
     }
   };
 
-  // Listen for iframe link clicks
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'NAVIGATE') {
-        loadPage(event.data.address, 'link', true);
+      if (event.source !== iframeRef.current?.contentWindow || !event.data || typeof event.data !== 'object') return;
+      const message = event.data as { type?: unknown; address?: unknown; scrollTop?: unknown };
+      if (message.type === 'FRAME_READY') {
+        restoreScroll(historyRef.current[historyIndexRef.current]?.scrollTop ?? 0);
+        return;
+      }
+      if (message.type === 'PAGE_SCROLL' && typeof message.scrollTop === 'number' && Number.isFinite(message.scrollTop)) {
+        updateEntryScroll(Math.max(0, message.scrollTop));
+      }
+      if (message.type === 'NAVIGATE' && typeof message.address === 'string' && /^[a-z0-9-]+\.zz$/.test(message.address)) {
+        navigateRef.current(message.address, 'link', 'new');
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [historyStack, historyIndex, userId]);
+  }, []);
 
-  const getIframeContent = () => {
+  const getIframeContent = (siteData: PageEntry['siteData']) => {
     if (!siteData) return '';
-    const interceptorScript = `
+    const safeBody = siteData.body.replace(/<\/script/gi, '<\\/script');
+    const contentDocument = `<html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'"><style>body { font-family: sans-serif; padding: 20px; color: #333; }</style></head><body>${safeBody}<script>
+      document.addEventListener('click', function(e) {
+        const anchor = e.target.closest('a');
+        const href = anchor && anchor.getAttribute('href');
+        if (href && /^[a-z0-9-]+\\.zz$/.test(href)) {
+          e.preventDefault();
+          parent.postMessage({ type: 'NAVIGATE', address: href }, '*');
+        }
+      });
+      window.addEventListener('scroll', function() {
+        parent.postMessage({ type: 'PAGE_SCROLL', scrollTop: window.scrollY }, '*');
+      });
+      window.addEventListener('message', function(event) {
+        if (event.source === parent && event.data && event.data.type === 'RESTORE_SCROLL' &&
+            typeof event.data.scrollTop === 'number' && Number.isFinite(event.data.scrollTop)) {
+          window.scrollTo(0, event.data.scrollTop);
+        }
+      });
+      parent.postMessage({ type: 'FRAME_READY' }, '*');
+    </script></body></html>`;
+    // Escape '<' so untrusted markup cannot terminate the outer bridge script.
+    const escapedContent = JSON.stringify(contentDocument).replace(/</g, '\\u003c');
+    return `<html><body style="margin:0"><iframe id="published-content" sandbox="allow-scripts" style="width:100%;height:100vh;border:0"></iframe><script>
+      const contentFrame = document.getElementById('published-content');
+      contentFrame.srcdoc = ${escapedContent};
+      window.addEventListener('message', function(event) {
+        if (event.source === contentFrame.contentWindow && event.data &&
+          typeof event.data === 'object' &&
+          (event.data.type === 'NAVIGATE' || event.data.type === 'PAGE_SCROLL' || event.data.type === 'FRAME_READY')) {
+          parent.postMessage(event.data, '*');
+        }
+      });
+      window.addEventListener('message', function(event) {
+        if (event.source === parent && event.data && event.data.type === 'RESTORE_SCROLL' &&
+            typeof event.data.scrollTop === 'number' && Number.isFinite(event.data.scrollTop)) {
+          contentFrame.contentWindow.postMessage(event.data, '*');
+        }
+      });
+    </script></body></html>`;
+    /*
       <script>
         document.addEventListener('click', function(e) {
           const anchor = e.target.closest('a');
@@ -169,7 +293,7 @@ export default function BrowserPage() {
         });
       </script>
     `;
-    return `<html><head><style>body { font-family: sans-serif; padding: 20px; color: #333; }</style></head><body>${siteData.body}${interceptorScript}</body></html>`;
+    */
   };
 
   return (
@@ -201,14 +325,13 @@ export default function BrowserPage() {
             <select
               value={userId}
               onChange={(e) => {
-                const val = e.target.value;
-                setUserId(val);
-                setUserName(val === '65a1b2c3d4e5f67890123456' ? 'Alice' : 'Bob');
+                const nextUserId = e.target.value;
+                setUserId(nextUserId);
+                loadUserHistory(nextUserId);
               }}
               className="bg-gray-900 border border-gray-700 text-xs rounded px-2 py-1 focus:outline-none focus:border-blue-500"
             >
-              <option value="65a1b2c3d4e5f67890123456">Alice (Active Explorer)</option>
-              <option value="65a1b2c3d4e5f67890123457">Bob (Frequent Reader)</option>
+              {users.map((user) => <option key={user._id} value={user._id}>{user.name}</option>)}
             </select>
           </div>
         </div>
@@ -261,19 +384,27 @@ export default function BrowserPage() {
               </div>
             )}
 
+            {visitWarning && !error && (
+              <div className="absolute top-3 left-3 right-3 z-10 rounded border border-yellow-300 bg-yellow-50 px-3 py-2 text-xs text-yellow-900 shadow">
+                {visitWarning}
+              </div>
+            )}
+
             {error ? (
               <div className="flex flex-col items-center justify-center flex-1 text-gray-800 p-8 text-center">
                 <h1 className="text-4xl font-bold mb-2">404</h1>
                 <p className="text-lg text-gray-600 mb-4">{error}</p>
-                <p className="text-sm text-gray-500">The address you typed doesn't exist on the small web.</p>
+                <p className="text-sm text-gray-500">The address you typed does not exist on the small web.</p>
               </div>
             ) : (
-              siteData && (
+              currentEntry.siteData && (
                 <iframe
-                  srcDoc={getIframeContent()}
+                  ref={iframeRef}
+                  srcDoc={getIframeContent(currentEntry.siteData)}
                   sandbox="allow-scripts"
                   className="w-full h-full border-0 bg-white"
-                  title={siteData.title}
+                  title={currentEntry.siteData.title}
+                  onLoad={() => restoreScroll(currentEntry.scrollTop)}
                 />
               )
             )}
@@ -283,7 +414,7 @@ export default function BrowserPage() {
         {/* History Sidebar */}
         <div className="w-80 bg-gray-800 rounded-lg shadow-2xl border border-gray-700 flex flex-col overflow-hidden">
           <div className="p-3 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h2 className="font-semibold text-sm tracking-wide uppercase text-gray-300">{userName}'s History</h2>
+            <h2 className="font-semibold text-sm tracking-wide uppercase text-gray-300">{userName}&apos;s History</h2>
             <span className="text-xs bg-gray-700 px-2 py-0.5 rounded text-gray-400">{dbHistory.length}</span>
           </div>
 
@@ -294,7 +425,7 @@ export default function BrowserPage() {
               dbHistory.map((visit) => (
                 <div 
                   key={visit._id}
-                  onClick={() => loadPage(visit.address, 'history-jump', true)}
+                  onClick={() => navigate(visit.address, 'history-jump', 'new')}
                   className="p-2.5 bg-gray-900/60 hover:bg-gray-700/60 border border-gray-700/50 rounded cursor-pointer transition group"
                 >
                   <div className="flex justify-between items-center mb-1">
@@ -336,12 +467,12 @@ export default function BrowserPage() {
               <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-sm font-medium">Search</button>
             </form>
             <div className="flex-1 overflow-y-auto space-y-2">
-              {searchResults.map((res: any) => (
+              {searchResults.map((res) => (
                 <div
                   key={res.address}
                   onClick={() => {
                     setIsSearchOpen(false);
-                    loadPage(res.address, 'search-jump', true);
+                    navigate(res.address, 'search-jump', 'new');
                   }}
                   className="p-3 bg-gray-900 hover:bg-gray-700 border border-gray-700 rounded cursor-pointer transition"
                 >
