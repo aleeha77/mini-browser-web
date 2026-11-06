@@ -18,3 +18,11 @@ export async function recordVisit(userId: string, address: string, method: strin
     body: JSON.stringify({ userId, address, navigationMethod: method }),
   });
 }
+
+export async function fetchHistory(userId: string) {
+  const res = await fetch(`${API_BASE}/history/${userId}`);
+  if (!res.ok) {
+    throw new Error('Failed to fetch history.');
+  }
+  return res.json();
+}
