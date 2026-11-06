@@ -21,8 +21,26 @@ export async function recordVisit(userId: string, address: string, method: strin
 
 export async function fetchHistory(userId: string) {
   const res = await fetch(`${API_BASE}/history/${userId}`);
+  if (!res.ok) throw new Error('Failed to fetch history.');
+  return res.json();
+}
+
+// NEW for Phase 5
+export async function searchSites(query: string) {
+  const res = await fetch(`${API_BASE}/search?q=${encodeURIComponent(query)}`);
+  if (!res.ok) throw new Error('Failed to search sites.');
+  return res.json();
+}
+
+export async function publishSite(data: { address: string; title: string; body: string; author: string }) {
+  const res = await fetch(`${API_BASE}/sites`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
   if (!res.ok) {
-    throw new Error('Failed to fetch history.');
+    const errText = await res.text();
+    throw new Error(errText || 'Failed to publish site.');
   }
   return res.json();
 }
