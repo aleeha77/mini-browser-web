@@ -34,7 +34,7 @@ export default function BrowserPage() {
       setAddressInput(address);
 
       // Record visit to backend
-      // await recordVisit(userId, address, method);
+      await recordVisit(userId, address, method);
 
       if (updateStack) {
         const newStack = historyStack.slice(0, historyIndex + 1);
